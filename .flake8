@@ -1,0 +1,3 @@
+[flake8]
+per-file-ignores =
+    storage/storage_stack.py:E501,F841
