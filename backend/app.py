@@ -36,8 +36,6 @@ def check_token():
             logger.debug('User is not authenticated')
             return redirect(auth_manager.get_authorize_url())
 
-    return jsonify(session)
-
 
 @app.route('/')
 def index():
