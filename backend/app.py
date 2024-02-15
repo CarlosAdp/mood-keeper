@@ -33,6 +33,7 @@ def check_token():
                     token_info['refresh_token'])
                 session['user_info']['token_info'] = token_info
         case _:
+            session['original_url'] = request.url
             logger.debug('User is not authenticated')
             return redirect(auth_manager.get_authorize_url())
 
@@ -59,13 +60,20 @@ def callback():
         'token_info': token_info,
     }
 
-    return redirect('/profile')
+    original_url = session.pop('original_url', '/profile')
+
+    return redirect(original_url)
 
 
 @app.route('/profile')
 def profile():
     user_info = session['user_info']
     return jsonify(user_info)
+
+
+@app.route('/test')
+def test():
+    return jsonify({'test': 'successful'})
 
 
 if __name__ == '__main__':
