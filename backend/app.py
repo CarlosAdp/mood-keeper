@@ -1,22 +1,27 @@
 import logging
 import os
+import time
 
-from flask import Flask, jsonify, redirect, request, session
 from dotenv import load_dotenv
+from flask import Flask, jsonify, redirect, request, session
 from spotipy import oauth2
+import awswrangler as wr
+import boto3
+import pandas as pd
 import spotipy
 
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY')
 
-auth_manager = oauth2.SpotifyOAuth(scope='user-read-private')
+scopes = 'user-read-private user-library-read'
+auth_manager = oauth2.SpotifyOAuth(scope=scopes)
 
 
 @app.before_request
@@ -71,9 +76,60 @@ def profile():
     return jsonify(user_info)
 
 
-@app.route('/test')
-def test():
-    return jsonify({'test': 'successful'})
+@app.route('/update_library')
+def update_library():
+    # TODO: Make this call async
+    now = pd.Timestamp.now()
+    sp = spotipy.Spotify(
+        auth=session['user_info']['token_info']['access_token'])
+    saved_tracks = []
+
+    offset = 0
+    while (
+        response := sp.current_user_saved_tracks(offset=offset, limit=50)
+    )['next']:
+        logger.info('Saving user library tracks, offset: %s', offset)
+        saved_tracks.extend(response['items'])
+        offset += 50
+
+        time.sleep(1)
+
+    saved_tracks = pd.json_normalize(saved_tracks)[[
+        'track.id',
+        'track.name',
+        'track.type',
+        'track.duration_ms',
+        'track.track_number',
+        'track.available_markets',
+        'track.popularity',
+        'track.album.id',
+        'track.album.name',
+        'track.album.type',
+        'track.album.release_date',
+        'added_at',
+    ]]
+    saved_tracks['user_id'] = session['user_info']['id']
+    saved_tracks['collected_at'] = now
+
+    s3_bucket = os.getenv('S3_BUCKET')
+    database = os.getenv('DATABASE_NAME')
+    table = 'user_library'
+
+    boto3_session = boto3.Session(region_name=os.getenv('AWS_REGION'))
+    wr.s3.to_parquet(
+        boto3_session=boto3_session,
+        df=saved_tracks,
+        path=f's3://{s3_bucket}/{table}',
+        dataset=True,
+        database=database,
+        table=table,
+        mode='overwrite_partitions',
+        partition_cols=['user_id'],
+    )
+
+    return (
+        jsonify({'success': True}), 200, {'Content-Type': 'application/json'}
+    )
 
 
 if __name__ == '__main__':
