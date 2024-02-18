@@ -1,4 +1,0 @@
-Flask
-spotipy
-python-dotenv
-awswrangler
