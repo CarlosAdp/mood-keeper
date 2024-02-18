@@ -8,20 +8,24 @@ from backend.storage_stack import StorageStack
 
 
 app = cdk.App()
-ComputeStack(
-    app, "MoodKeeperBackendComputeStack",
+
+storage_stack = StorageStack(
+    app, "MoodKeeperBackendStorageStack",
     env=cdk.Environment(
         account=os.getenv('CDK_DEFAULT_ACCOUNT'),
         region='sa-east-1'
     )
 )
 
-StorageStack(
-    app, "MoodKeeperBackendStorageStack",
+ComputeStack(
+    app, "MoodKeeperBackendComputeStack",
     env=cdk.Environment(
         account=os.getenv('CDK_DEFAULT_ACCOUNT'),
         region='sa-east-1'
-    )
+    ),
+    bucket_name=storage_stack.bucket_name,
+    database_name=storage_stack.database_name,
+    managed_policy_arn=storage_stack.managed_policy_arn,
 )
 
 app.synth()
