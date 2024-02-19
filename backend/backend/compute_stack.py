@@ -3,12 +3,11 @@ from aws_cdk import (
     RemovalPolicy,
     Stack,
     aws_apigatewayv2 as api_gw,
+    aws_dynamodb as dynamodb,
     aws_apigatewayv2_integrations as api_gw_integrations,
     aws_iam as iam,
     aws_lambda as _lambda,
-    aws_lambda_event_sources as lambda_event_sources,
     aws_lambda_python_alpha as _lambda_python,
-    aws_sqs as sqs,
 )
 from constructs import Construct
 
@@ -22,14 +21,36 @@ class ComputeStack(Stack):
 
         super().__init__(scope, construct_id, **kwargs)
 
-        # Queues
-        queue_user_update_saved_tracks = sqs.Queue(
-            self, "UserSavedTracksQueue",
-            queue_name='MoodKeeperUserUpdateSavedTracks',
-            enforce_ssl=True,
+        jobs_table = dynamodb.Table(
+            self, 'JobsTable',
+            table_name='MoodKeeperJobs',
+            partition_key=dynamodb.Attribute(
+                name='type',
+                type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(
+                name='id',
+                type=dynamodb.AttributeType.STRING
+            ),
+            stream=dynamodb.StreamViewType.NEW_IMAGE,
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.DESTROY,
-            retention_period=Duration.minutes(20),
-            visibility_timeout=Duration.minutes(10),
+            time_to_live_attribute='ttl',
+        )
+        jobs_table_access_policy_statement = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=[
+                'dynamodb:DeleteItem',
+                'dynamodb:GetItem',
+                'dynamodb:PutItem',
+                'dynamodb:Query',
+                'dynamodb:Scan',
+                'dynamodb:UpdateItem',
+                'dynamodb:DescribeTable',
+                'dynamodb:BatchWriteItem',
+                'dynamodb:BatchGetItem'
+            ],
+            resources=[jobs_table.table_arn]
         )
 
         # Layers
@@ -45,56 +66,19 @@ class ComputeStack(Stack):
         )
 
         # Functions
-        function_user_update_saved_tracks = _lambda.Function(
-            self, 'UserUpdateSavedTracksFunction',
-            function_name='MoodKeeperUserUpdateSavedTracks',
+        function_job_handler = _lambda.Function(
+            self, 'JobHandlerFunction',
+            function_name='MoodKeeperJobHandler',
             runtime=_lambda.Runtime.PYTHON_3_12,
-            handler='functions.user_update_saved_tracks',
+            handler='job_handler.handler',
             code=_lambda.Code.from_asset('assets/lambda'),
             timeout=Duration.seconds(10),
-            environment={
-                'QUEUE_URL': queue_user_update_saved_tracks.queue_url,
-            },
-            layers=[
-                layer_main,
-                layer_managed,
-            ],
-        )
-        function_user_update_saved_tracks.add_to_role_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=['sqs:SendMessage'],
-                resources=[queue_user_update_saved_tracks.queue_arn]
-            )
-        )
-
-        function_user_update_saved_tracks_by_page = _lambda.Function(
-            self, 'UserUpdateSavedTracksByPageFunction',
-            function_name='MoodKeeperUserUpdateSavedTracksByPage',
-            runtime=_lambda.Runtime.PYTHON_3_12,
-            handler='functions.user_update_saved_tracks_by_page',
-            code=_lambda.Code.from_asset('assets/lambda'),
-            timeout=Duration.minutes(7),
             memory_size=1280,
-            events=[
-                lambda_event_sources.SqsEventSource(
-                    queue=queue_user_update_saved_tracks,
-                )
-            ],
-            layers=[
-                layer_main,
-                layer_managed,
-            ],
-            environment={
-                'BUCKET_NAME': bucket_name,
-                'DATABASE_NAME': database_name,
-                'QUEUE_URL': queue_user_update_saved_tracks.queue_url,
-            },
+            layers=[layer_managed],
+            environment={'JOBS_TABLE': jobs_table.table_name},
         )
-        function_user_update_saved_tracks_by_page.role.add_managed_policy(
-            iam.ManagedPolicy.from_managed_policy_arn(
-                self, 'MoodKeeperManagedPolicy', managed_policy_arn
-            )
+        function_job_handler.add_to_role_policy(
+            jobs_table_access_policy_statement
         )
 
         # API
@@ -105,10 +89,10 @@ class ComputeStack(Stack):
         )
 
         api.add_routes(
-            path='/update_saved_tracks',
-            methods=[api_gw.HttpMethod.POST],
+            path='/user/update_saved_tracks',
+            methods=[api_gw.HttpMethod.GET, api_gw.HttpMethod.POST],
             integration=api_gw_integrations.HttpLambdaIntegration(
                 'UpdateSavedTracksIntegration',
-                handler=function_user_update_saved_tracks,
+                handler=function_job_handler,
             )
         )
