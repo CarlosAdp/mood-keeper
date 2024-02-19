@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 
 import awswrangler as wr
 import boto3
@@ -12,75 +13,59 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-def send_sqs_message(message: str, message_attributes: dict) -> dict:
-    message_attributes_parsed = dict()
-    for key, value in message_attributes.items():
-        match value:
-            case str():
-                message_attributes_parsed[key] = {
-                    'DataType': 'String',
-                    'StringValue': value
-                }
-            case int():
-                message_attributes_parsed[key] = {
-                    'DataType': 'Number',
-                    'StringValue': str(value)
-                }
-            case _:
-                raise ValueError(
-                    f'Invalid type {type(value)} for message attribute {key}'
-                )
-
-    sqs = boto3.client('sqs')
-    return sqs.send_message(
-        QueueUrl=os.getenv('QUEUE_URL'),
-        MessageAttributes=message_attributes_parsed,
-        MessageBody=message
-    )
-
-
 def user_update_saved_tracks(event: dict, context: dict) -> dict:
     body = json.loads(event["body"])
 
     user_id = body["user_id"]
     access_token = body["access_token"]
-    offset = 0
     requested_at = event['requestContext']['timeEpoch']
 
-    response = send_sqs_message(
-        f'Requesting update to user {user_id} saved tracks',
-        {
-            'user_id': user_id,
-            'access_token': access_token,
-            'offset': offset,
-            'requested_at': requested_at,
+    sqs = boto3.client('sqs')
+    sqs.send_message(
+        QueueUrl=os.getenv('QUEUE_URL'),
+        MessageBody=f'Getting saved tracks for user {user_id}',
+        MessageAttributes={
+            'user_id': {
+                'DataType': 'String',
+                'StringValue': user_id
+            },
+            'access_token': {
+                'DataType': 'String',
+                'StringValue': access_token
+            },
+            'requested_at': {
+                'DataType': 'Number',
+                'StringValue': str(requested_at)
+            },
         }
     )
 
     return {
         "statusCode": 200,
-        "body": json.dumps({'MessageId': response['MessageId']}),
+        "body": json.dumps({'message': 'Update request has been done'})
     }
 
 
 def user_update_saved_tracks_by_page(event: dict, context: dict) -> dict:
     for message in event['Records']:
         attributes = message['messageAttributes']
-
         user_id = attributes['user_id']['stringValue']
         access_token = attributes['access_token']['stringValue']
-        offset = int(attributes['offset']['stringValue'])
-        requested_at = int(attributes['requested_at']['stringValue'])
 
-        logger.info(
-            'Getting page %d of saved tracks for user %s',
-            offset/50, user_id
-        )
+        logger.info('Getting saved tracks for user %s', user_id)
 
         sp = spotipy.Spotify(auth=access_token)
-        response = sp.current_user_saved_tracks(limit=50, offset=offset)
 
-        saved_tracks = pd.json_normalize(response['items'])[[
+        offset = 0
+        saved_tracks = []
+        while (resp := sp.current_user_saved_tracks(50, offset))['next']:
+            logger.info('Got saved tracks page %d', offset/50)
+
+            saved_tracks.extend(resp['items'])
+            offset += 50
+            time.sleep(1)
+
+        saved_tracks = pd.json_normalize(saved_tracks)[[
             'track.id',
             'track.name',
             'track.type',
@@ -115,8 +100,8 @@ def user_update_saved_tracks_by_page(event: dict, context: dict) -> dict:
         )
 
         logger.info(
-            'Saved page %d of saved tracks of user %s to %s',
-            offset/50, user_id, f's3://{bucket}/{prefix}'
+            'Saved saved tracks of user %s to %s',
+            user_id, f's3://{bucket}/{prefix}'
         )
 
         sqs = boto3.client("sqs")
@@ -126,18 +111,3 @@ def user_update_saved_tracks_by_page(event: dict, context: dict) -> dict:
         )
 
         logger.info('Deleted message %s', message['messageId'])
-
-        if response['next']:
-            offset += 50
-
-            send_sqs_message(
-                f'Requesting page {offset / 50} of user {user_id} library',
-                {
-                    'user_id': user_id,
-                    'access_token': access_token,
-                    'offset': offset,
-                    'requested_at': requested_at,
-                }
-            )
-
-            logger.info('Next page is available at offset %d', offset)

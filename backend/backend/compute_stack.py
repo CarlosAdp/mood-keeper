@@ -28,7 +28,8 @@ class ComputeStack(Stack):
             queue_name='MoodKeeperUserUpdateSavedTracks',
             enforce_ssl=True,
             removal_policy=RemovalPolicy.DESTROY,
-            retention_period=Duration.minutes(10),
+            retention_period=Duration.minutes(20),
+            visibility_timeout=Duration.minutes(10),
         )
 
         # Layers
@@ -50,6 +51,7 @@ class ComputeStack(Stack):
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler='functions.user_update_saved_tracks',
             code=_lambda.Code.from_asset('assets/lambda'),
+            timeout=Duration.seconds(10),
             environment={
                 'QUEUE_URL': queue_user_update_saved_tracks.queue_url,
             },
@@ -72,11 +74,11 @@ class ComputeStack(Stack):
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler='functions.user_update_saved_tracks_by_page',
             code=_lambda.Code.from_asset('assets/lambda'),
-            timeout=Duration.minutes(2),
+            timeout=Duration.minutes(7),
             memory_size=1280,
             events=[
                 lambda_event_sources.SqsEventSource(
-                    queue=queue_user_update_saved_tracks
+                    queue=queue_user_update_saved_tracks,
                 )
             ],
             layers=[
@@ -92,13 +94,6 @@ class ComputeStack(Stack):
         function_user_update_saved_tracks_by_page.role.add_managed_policy(
             iam.ManagedPolicy.from_managed_policy_arn(
                 self, 'MoodKeeperManagedPolicy', managed_policy_arn
-            )
-        )
-        function_user_update_saved_tracks_by_page.add_to_role_policy(
-            iam.PolicyStatement(
-                effect=iam.Effect.ALLOW,
-                actions=['sqs:SendMessage'],
-                resources=[queue_user_update_saved_tracks.queue_arn]
             )
         )
 
