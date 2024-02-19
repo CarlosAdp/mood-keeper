@@ -70,8 +70,7 @@ def user_update_saved_tracks_by_page(event: dict, context: dict) -> dict:
         user_id = attributes['user_id']['stringValue']
         access_token = attributes['access_token']['stringValue']
         offset = int(attributes['offset']['stringValue'])
-        requested_at = pd.Timestamp.fromtimestamp(
-            int(attributes['requested_at']['stringValue']) / 1000)
+        requested_at = int(attributes['requested_at']['stringValue'])
 
         logger.info(
             'Getting page %d of saved tracks for user %s',
@@ -96,7 +95,8 @@ def user_update_saved_tracks_by_page(event: dict, context: dict) -> dict:
             'added_at',
         ]]
         saved_tracks['user_id'] = user_id
-        saved_tracks['requested_at'] = requested_at
+        saved_tracks['requested_at'] = pd.Timestamp.fromtimestamp(
+            int(attributes['requested_at']['stringValue']) / 1000)
 
         logger.info('Saving to S3 and glue')
 

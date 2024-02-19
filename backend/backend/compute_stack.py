@@ -94,6 +94,13 @@ class ComputeStack(Stack):
                 self, 'MoodKeeperManagedPolicy', managed_policy_arn
             )
         )
+        function_user_update_saved_tracks_by_page.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=['sqs:SendMessage'],
+                resources=[queue_user_update_saved_tracks.queue_arn]
+            )
+        )
 
         # API
         api = api_gw.HttpApi(
