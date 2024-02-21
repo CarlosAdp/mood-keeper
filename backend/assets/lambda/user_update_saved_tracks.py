@@ -54,6 +54,7 @@ def handler(event: dict, context: dict) -> dict:
         .str.replace('.', '_', regex=False)
     saved_tracks['user_id'] = user_id
     saved_tracks['job_id'] = record['dynamodb']['NewImage']['Id']['S']
+    saved_tracks['collected_at'] = pd.Timestamp.now()
 
     logger.info('Saving to S3 and glue')
     bucket = os.getenv('BUCKET_NAME')
@@ -67,7 +68,7 @@ def handler(event: dict, context: dict) -> dict:
         dataset=True,
         database=database,
         table=table,
-        partition_cols=['user_id'],
+        partition_cols=['user_id', 'collected_at'],
         mode='overwrite_partitions',
     )
 
