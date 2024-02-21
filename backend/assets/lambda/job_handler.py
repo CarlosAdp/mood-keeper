@@ -1,3 +1,5 @@
+from datetime import datetime
+import re
 from typing import Callable
 import json
 import logging
@@ -6,8 +8,10 @@ import random
 import string
 import traceback
 
-import awswrangler as wr
-from boto3.dynamodb.conditions import Key
+import boto3
+
+
+dynamodb = boto3.resource('dynamodb')
 
 
 logger = logging.getLogger()
@@ -17,95 +21,113 @@ logger.setLevel(logging.INFO)
 def handler(event: dict, context: dict):
     job_type = event['rawPath']
 
-    if event['requestContext']['http']['method'] == 'GET':
-        job_id = event['queryStringParameters']['job_id']
+    table = dynamodb.Table(os.getenv('JOBS_TABLE'))
 
-        items = wr.dynamodb.read_items(
-            table_name=os.getenv('JOBS_TABLE'),
-            key_condition_expression=(
-                Key('type').eq(job_type) & Key('id').eq(job_id)
-            ),
-        )
-        if len(items) == 0:
+    match event['requestContext']['http']['method']:
+        case 'POST':
+            job_id = ''.join(random.choices(
+                string.ascii_uppercase + string.digits,
+                k=8
+            ))
+            request_timestamp = event['requestContext']['timeEpoch']
+            request_datetime \
+                = datetime.fromtimestamp(request_timestamp / 1000).isoformat()
+
+            table.put_item(
+                Item={
+                    'Type': job_type,
+                    'Id': job_id,
+                    'Parameters': event['body'],
+                    'Status': 'PENDING',
+                    'StatusMessage': 'Job started',
+                    'RequestedAt': request_datetime,
+                    'LastStatusUpdateAt': request_datetime,
+                    'TTL': request_timestamp + + 60 * 60 * 24 * 7,
+                }
+            )
+
             return {
-                "statusCode": 404,
-                "body": "Job not found"
+                "statusCode": 202,
+                "body": json.dumps({'Id': job_id, 'Status': 'PENDING'}),
             }
+        case 'GET':
+            job_id = event['queryStringParameters'].get('job_id')
 
-        job_status = items.loc[0, 'status']
+            if job_id is None:
+                return {
+                    "statusCode": 400,
+                    "body": 'Missing job ID'
+                }
 
-        return {
-            "statusCode": 200,
-            "body": json.dumps({'job_id': job_id, 'status': job_status}),
-        }
+            job = table.get_item(
+                Key={'Type': job_type, 'Id': job_id}).get('Item')
 
-    if event['requestContext']['http']['method'] == 'POST':
-        job_id = ''.join(random.choices(
-            string.ascii_uppercase + string.digits,
-            k=8
-        ))
-
-        wr.dynamodb.put_items(
-            table_name=os.getenv('JOBS_TABLE'),
-            items=[{
-                'type': job_type,
-                'id': job_id,
-                'parameters': event['body'],
-                'status': 'PENDING',
-                'requested_at': event['requestContext']['timeEpoch'],
-                'ttl': event['requestContext']['timeEpoch'] + 60 * 60 * 24 * 7,
-            }],
-        )
-
-        return {
-            "statusCode": 202,
-            "body": json.dumps({'job_id': job_id, 'status': 'PENDING'}),
-        }
+            match job:
+                case None:
+                    return {
+                        "statusCode": 404,
+                        "body": json.dumps({
+                            'Id': job_id,
+                            'Status': 'NOT FOUND'
+                        })
+                    }
+                case {
+                    'Id': id,
+                    'Status': status,
+                    'RequestedAt': request_datetime,
+                    'LastStatusUpdateAt': last_update_datetime,
+                    **kw
+                }:
+                    return {
+                        "statusCode": 500 if status == 'FAILED' else 200,
+                        "body": json.dumps({
+                            'Id': id,
+                            'Status': status,
+                            'StatusMessage': kw.get('StatusMessage'),
+                            'RequestedAt': request_datetime,
+                            'LastStatusUpdateAt': last_update_datetime,
+                        })
+                    }
 
 
 def from_job_request(job_type: str) -> Callable[[dict, dict], dict]:
-    '''Decorator for lambda function that executes from a job request'''
+    '''Decorator for lambda function that executes from a job request.'''
 
     def decorator(func):
         def wrapper(event: dict, context: dict):
-            job_id = event['Records'][0]['dynamodb']['Keys']['id']['S']
-            parameters \
-                = event['Records'][0]['dynamodb']['Keys']['parameters']['S']
-            requested_at \
-                = event['Records'][0]['dynamodb']['Keys']['requested_at']['N']
-            ttl = event['Records'][0]['dynamodb']['Keys']['ttl']['N']
+            job_id = event['Records'][0]['dynamodb']['NewImage']['Id']['S']
+            table_arn = event['Records'][0]['eventSourceARN']
+            table_name = re.findall(
+                r'arn:aws:dynamodb:.*?:table/([^/]*)', table_arn)[0]
+
+            table = dynamodb.Table(table_name)
 
             try:
                 func(event, context)
+
                 status = 'SUCCEEDED'
+                status_message = 'Job completed successfully'
                 logger.info('Job %s finished successfully', job_id)
 
-                wr.dynamodb.put_items(
-                    table_name=os.getenv('JOBS_TABLE'),
-                    items=[{
-                        'type': job_type,
-                        'id': job_id,
-                        'parameters': parameters,
-                        'status': status,
-                        'requested_at': requested_at,
-                        'ttl': ttl,
-                    }]
-                )
             except Exception as e:
                 status = 'FAILED'
-                logger.error('Job %s failed: %s', job_id, e)
+                status_message = traceback.format_exc()
+                raise e
 
-                wr.dynamodb.put_items(
-                    table_name=os.getenv('JOBS_TABLE'),
-                    items=[{
-                        'type': job_type,
-                        'id': job_id,
-                        'parameters': parameters,
-                        'status': status,
-                        'statusMessage': traceback.format_exc(),
-                        'requested_at': requested_at,
-                        'ttl': ttl,
-                    }]
+            finally:
+                table.update_item(
+                    Key={'Type': job_type, 'Id': job_id},
+                    UpdateExpression=(
+                        'SET #Status = :status, '
+                        'StatusMessage = :statusMessage, '
+                        'LastStatusUpdateAt = :lastStatusUpdateAt'
+                    ),
+                    ExpressionAttributeNames={'#Status': 'Status'},
+                    ExpressionAttributeValues={
+                        ':status': status,
+                        ':statusMessage': status_message,
+                        ':lastStatusUpdateAt': datetime.now().isoformat(),
+                    }
                 )
 
         return wrapper

@@ -3,10 +3,11 @@ from aws_cdk import (
     RemovalPolicy,
     Stack,
     aws_apigatewayv2 as api_gw,
-    aws_dynamodb as dynamodb,
     aws_apigatewayv2_integrations as api_gw_integrations,
+    aws_dynamodb as dynamodb,
     aws_iam as iam,
     aws_lambda as _lambda,
+    aws_lambda_event_sources as lambda_event_sources,
     aws_lambda_python_alpha as _lambda_python,
 )
 from constructs import Construct
@@ -25,17 +26,17 @@ class ComputeStack(Stack):
             self, 'JobsTable',
             table_name='MoodKeeperJobs',
             partition_key=dynamodb.Attribute(
-                name='type',
+                name='Type',
                 type=dynamodb.AttributeType.STRING
             ),
             sort_key=dynamodb.Attribute(
-                name='id',
+                name='Id',
                 type=dynamodb.AttributeType.STRING
             ),
             stream=dynamodb.StreamViewType.NEW_IMAGE,
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.DESTROY,
-            time_to_live_attribute='ttl',
+            time_to_live_attribute='TTL',
         )
         jobs_table_access_policy_statement = iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
@@ -78,6 +79,38 @@ class ComputeStack(Stack):
             environment={'JOBS_TABLE': jobs_table.table_name},
         )
         function_job_handler.add_to_role_policy(
+            jobs_table_access_policy_statement
+        )
+
+        function_user_update_saved_tracks = _lambda.Function(
+            self, 'UserUpdateSavedTracksFunction',
+            function_name='MoodKeeperUserUpdateSavedTracks',
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler='user_update_saved_tracks.handler',
+            code=_lambda.Code.from_asset('assets/lambda'),
+            timeout=Duration.seconds(10),
+            memory_size=1280,
+            events=[lambda_event_sources.DynamoEventSource(
+                table=jobs_table,
+                starting_position=_lambda.StartingPosition.LATEST,
+                batch_size=1,
+                filters=[_lambda.FilterCriteria.filter({
+                    'eventName': _lambda.FilterRule.is_equal('INSERT'),
+                    'dynamodb': {'NewImage': {'Type': {
+                        'S': _lambda.FilterRule.is_equal(
+                            '/user/update_saved_tracks'
+                        )
+                    }}}
+                })]
+            )],
+            layers=[layer_main, layer_managed],
+            environment={
+                'BUCKET_NAME': bucket_name,
+                'DATABASE_NAME': database_name,
+                'JOBS_TABLE': jobs_table.table_name,
+            },
+        )
+        function_user_update_saved_tracks.add_to_role_policy(
             jobs_table_access_policy_statement
         )
 
