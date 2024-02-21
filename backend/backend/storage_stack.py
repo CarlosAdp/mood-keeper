@@ -10,7 +10,7 @@ from constructs import Construct
 class StorageStack(Stack):
     bucket_name: str
     database_name: str
-    managed_policy_arn: str
+    storage_policy_name: str
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -35,10 +35,10 @@ class StorageStack(Stack):
             )
         )
 
-        managed_policy_name = 'MoodKeeperStoragePolicy'
-        managed_policy = iam.ManagedPolicy(
+        self.storage_policy_name = 'MoodKeeperStoragePolicy'
+        storage_policy = iam.ManagedPolicy(
             self, "MoodKeeperManagedPolicy",
-            managed_policy_name=managed_policy_name,
+            managed_policy_name=self.storage_policy_name,
             statements=[
                 iam.PolicyStatement(
                     effect=iam.Effect.ALLOW,
@@ -82,4 +82,3 @@ class StorageStack(Stack):
                 )
             ],
         )
-        self.managed_policy_arn = managed_policy.managed_policy_arn

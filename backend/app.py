@@ -25,7 +25,7 @@ ComputeStack(
     ),
     bucket_name=storage_stack.bucket_name,
     database_name=storage_stack.database_name,
-    managed_policy_arn=storage_stack.managed_policy_arn,
+    storage_policy_name=storage_stack.storage_policy_name,
 )
 
 app.synth()

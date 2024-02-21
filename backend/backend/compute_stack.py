@@ -1,3 +1,4 @@
+import math
 from aws_cdk import (
     Duration,
     RemovalPolicy,
@@ -18,9 +19,14 @@ class ComputeStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         bucket_name = kwargs.pop('bucket_name')
         database_name = kwargs.pop('database_name')
-        managed_policy_arn = kwargs.pop('managed_policy_arn')
+        storage_policy_name = kwargs.pop('storage_policy_name')
 
         super().__init__(scope, construct_id, **kwargs)
+
+        storage_policy = iam.ManagedPolicy.from_managed_policy_name(
+            self, 'StoragePolicy',
+            storage_policy_name
+        )
 
         jobs_table = dynamodb.Table(
             self, 'JobsTable',
@@ -82,18 +88,20 @@ class ComputeStack(Stack):
             jobs_table_access_policy_statement
         )
 
+        timeout_minutes = math.ceil(10000 / 50 * 2 / 60)
         function_user_update_saved_tracks = _lambda.Function(
             self, 'UserUpdateSavedTracksFunction',
             function_name='MoodKeeperUserUpdateSavedTracks',
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler='user_update_saved_tracks.handler',
             code=_lambda.Code.from_asset('assets/lambda'),
-            timeout=Duration.seconds(10),
+            timeout=Duration.minutes(timeout_minutes),
             memory_size=1280,
             events=[lambda_event_sources.DynamoEventSource(
                 table=jobs_table,
                 starting_position=_lambda.StartingPosition.LATEST,
                 batch_size=1,
+                retry_attempts=1,
                 filters=[_lambda.FilterCriteria.filter({
                     'eventName': _lambda.FilterRule.is_equal('INSERT'),
                     'dynamodb': {'NewImage': {'Type': {
@@ -112,6 +120,9 @@ class ComputeStack(Stack):
         )
         function_user_update_saved_tracks.add_to_role_policy(
             jobs_table_access_policy_statement
+        )
+        function_user_update_saved_tracks.role.add_managed_policy(
+            storage_policy
         )
 
         # API

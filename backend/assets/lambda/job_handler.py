@@ -29,9 +29,9 @@ def handler(event: dict, context: dict):
                 string.ascii_uppercase + string.digits,
                 k=8
             ))
-            request_timestamp = event['requestContext']['timeEpoch']
+            request_timestamp = event['requestContext']['timeEpoch'] // 1000
             request_datetime \
-                = datetime.fromtimestamp(request_timestamp / 1000).isoformat()
+                = datetime.fromtimestamp(request_timestamp).isoformat()
 
             table.put_item(
                 Item={
@@ -51,7 +51,7 @@ def handler(event: dict, context: dict):
                 "body": json.dumps({'Id': job_id, 'Status': 'PENDING'}),
             }
         case 'GET':
-            job_id = event['queryStringParameters'].get('job_id')
+            job_id = event.get('queryStringParameters', {}).get('job_id')
 
             if job_id is None:
                 return {
