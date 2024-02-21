@@ -1,7 +1,7 @@
 from job_handler import from_job_request
 
 
-@from_job_request(job_type='/user/update_saved_tracks')
+@from_job_request
 def handler(event: dict, context: dict) -> dict:
     print(event)
     return {

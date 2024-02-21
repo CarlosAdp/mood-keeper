@@ -90,45 +90,44 @@ def handler(event: dict, context: dict):
                     }
 
 
-def from_job_request(job_type: str) -> Callable[[dict, dict], dict]:
+def from_job_request(func) -> Callable[[dict, dict], dict]:
     '''Decorator for lambda function that executes from a job request.'''
+    def wrapper(event: dict, context: dict):
+        job_type = event['Records'][0]['dynamodb']['Keys']['Type']['S']
+        job_id = event['Records'][0]['dynamodb']['Keys']['Id']['S']
 
-    def decorator(func):
-        def wrapper(event: dict, context: dict):
-            job_id = event['Records'][0]['dynamodb']['NewImage']['Id']['S']
-            table_arn = event['Records'][0]['eventSourceARN']
-            table_name = re.findall(
-                r'arn:aws:dynamodb:.*?:table/([^/]*)', table_arn)[0]
+        table_name = re.findall(
+            r'arn:aws:dynamodb:.*?:table/([^/]*)',
+            event['Records'][0]['eventSourceARN']
+        )[0]
+        table = dynamodb.Table(table_name)
 
-            table = dynamodb.Table(table_name)
+        try:
+            func(event, context)
 
-            try:
-                func(event, context)
+            status = 'SUCCEEDED'
+            status_message = 'Job completed successfully'
+            logger.info('Job %s finished successfully', job_id)
 
-                status = 'SUCCEEDED'
-                status_message = 'Job completed successfully'
-                logger.info('Job %s finished successfully', job_id)
+        except Exception as e:
+            status = 'FAILED'
+            status_message = traceback.format_exc()
+            raise e
 
-            except Exception as e:
-                status = 'FAILED'
-                status_message = traceback.format_exc()
-                raise e
+        finally:
+            table.update_item(
+                Key={'Type': job_type, 'Id': job_id},
+                UpdateExpression=(
+                    'SET #Status = :status, '
+                    'StatusMessage = :statusMessage, '
+                    'LastStatusUpdateAt = :lastStatusUpdateAt'
+                ),
+                ExpressionAttributeNames={'#Status': 'Status'},
+                ExpressionAttributeValues={
+                    ':status': status,
+                    ':statusMessage': status_message,
+                    ':lastStatusUpdateAt': datetime.now().isoformat(),
+                }
+            )
 
-            finally:
-                table.update_item(
-                    Key={'Type': job_type, 'Id': job_id},
-                    UpdateExpression=(
-                        'SET #Status = :status, '
-                        'StatusMessage = :statusMessage, '
-                        'LastStatusUpdateAt = :lastStatusUpdateAt'
-                    ),
-                    ExpressionAttributeNames={'#Status': 'Status'},
-                    ExpressionAttributeValues={
-                        ':status': status,
-                        ':statusMessage': status_message,
-                        ':lastStatusUpdateAt': datetime.now().isoformat(),
-                    }
-                )
-
-        return wrapper
-    return decorator
+    return wrapper
